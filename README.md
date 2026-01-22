@@ -118,10 +118,6 @@ cargo test sumcheck::tests     # Sumcheck protocol tests
 cargo test zk::tests           # End-to-end ZK tests
 ```
 
-## License
-
-MIT License
-
 ## Contributing
 
 Contributions are welcome! Please ensure all tests pass before submitting a pull request.
