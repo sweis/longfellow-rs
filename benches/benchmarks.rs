@@ -8,12 +8,15 @@ use longfellow_zk::{
     batch_invert,
     circuit::{CircuitBuilder, LayerBuilder},
     field::Fp128,
-    zk::{ZkProver, verify_zk},
-    transcript::Transcript,
-    merkle::MerkleTree,
+    hash::{HashFunction, Sha256Hash},
+    merkle::{MerkleTree, MerkleTreeGeneric},
     polynomial::{extend, extend_evaluations, Polynomial},
+    transcript::Transcript,
+    zk::{verify_zk, ZkProver},
     ligero::LigeroProver,
 };
+#[cfg(feature = "blake3_hash")]
+use longfellow_zk::hash::Blake3Hash;
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 
@@ -306,6 +309,95 @@ fn bench_larger_circuit(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_hash_comparison(c: &mut Criterion) {
+    let mut group = c.benchmark_group("Hash Comparison");
+
+    // Test data of various sizes
+    let data_small = [0u8; 64];
+    let data_medium = [0u8; 256];
+    let data_large = [0u8; 1024];
+
+    // SHA-256 benchmarks
+    group.bench_function("SHA256/hash_64B", |b| {
+        b.iter(|| black_box(Sha256Hash::hash(&data_small)))
+    });
+
+    group.bench_function("SHA256/hash_256B", |b| {
+        b.iter(|| black_box(Sha256Hash::hash(&data_medium)))
+    });
+
+    group.bench_function("SHA256/hash_1KB", |b| {
+        b.iter(|| black_box(Sha256Hash::hash(&data_large)))
+    });
+
+    // SHA-256 hash_pair
+    let left = [1u8; 32];
+    let right = [2u8; 32];
+    group.bench_function("SHA256/hash_pair", |b| {
+        b.iter(|| black_box(Sha256Hash::hash_pair(&left, &right)))
+    });
+
+    // BLAKE3 benchmarks (when feature enabled)
+    #[cfg(feature = "blake3_hash")]
+    {
+        group.bench_function("BLAKE3/hash_64B", |b| {
+            b.iter(|| black_box(Blake3Hash::hash(&data_small)))
+        });
+
+        group.bench_function("BLAKE3/hash_256B", |b| {
+            b.iter(|| black_box(Blake3Hash::hash(&data_medium)))
+        });
+
+        group.bench_function("BLAKE3/hash_1KB", |b| {
+            b.iter(|| black_box(Blake3Hash::hash(&data_large)))
+        });
+
+        group.bench_function("BLAKE3/hash_pair", |b| {
+            b.iter(|| black_box(Blake3Hash::hash_pair(&left, &right)))
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_merkle_hash_comparison(c: &mut Criterion) {
+    let mut group = c.benchmark_group("Merkle Hash Comparison");
+    group.sample_size(20);
+
+    for size in [64, 256, 1024].iter() {
+        // SHA-256 Merkle tree
+        group.bench_with_input(BenchmarkId::new("SHA256/build", size), size, |b, &size| {
+            let mut tree = MerkleTreeGeneric::<Sha256Hash>::new(size);
+            for i in 0..size {
+                let mut leaf = [0u8; 32];
+                leaf[0..8].copy_from_slice(&(i as u64).to_le_bytes());
+                tree.set_leaf(i, leaf);
+            }
+            b.iter(|| {
+                let mut t = tree.clone();
+                black_box(t.build())
+            });
+        });
+
+        // BLAKE3 Merkle tree (when feature enabled)
+        #[cfg(feature = "blake3_hash")]
+        group.bench_with_input(BenchmarkId::new("BLAKE3/build", size), size, |b, &size| {
+            let mut tree = MerkleTreeGeneric::<Blake3Hash>::new(size);
+            for i in 0..size {
+                let mut leaf = [0u8; 32];
+                leaf[0..8].copy_from_slice(&(i as u64).to_le_bytes());
+                tree.set_leaf(i, leaf);
+            }
+            b.iter(|| {
+                let mut t = tree.clone();
+                black_box(t.build())
+            });
+        });
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_field_operations,
@@ -315,6 +407,8 @@ criterion_group!(
     bench_ligero,
     bench_simple_proof,
     bench_larger_circuit,
+    bench_hash_comparison,
+    bench_merkle_hash_comparison,
 );
 
 criterion_main!(benches);

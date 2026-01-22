@@ -8,6 +8,7 @@ repository = "https://github.com/sweis/longfellow-rs"
 
 [dependencies]
 sha2 = "0.10"
+blake3 = { version = "1.5", optional = true }
 rand = "0.8"
 rand_chacha = "0.3"
 subtle = "2.5"
@@ -26,6 +27,7 @@ harness = false
 [features]
 default = []
 std = []
+blake3_hash = ["blake3"]
 
 [profile.release]
 lto = true

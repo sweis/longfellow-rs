@@ -2,13 +2,20 @@
 //!
 //! This module implements a Merkle tree with batch proof support as specified
 //! in the Longfellow ZK protocol.
+//!
+//! # Hash Functions
+//!
+//! By default, the Merkle tree uses SHA-256 as required by the spec.
+//! When the `blake3_hash` feature is enabled, BLAKE3 is used instead
+//! for improved performance.
 
-use sha2::{Digest, Sha256};
+use crate::hash::{DefaultHash, HashDigest, HashFunction};
+use std::marker::PhantomData;
 
-/// A 32-byte digest (SHA-256 output).
-pub type MerkleDigest = [u8; 32];
+/// A 32-byte digest (hash output).
+pub type MerkleDigest = HashDigest;
 
-/// A Merkle tree with n leaves.
+/// A Merkle tree with n leaves, generic over the hash function.
 ///
 /// The tree is stored in an array where:
 /// - Index 0 is unused
@@ -16,20 +23,23 @@ pub type MerkleDigest = [u8; 32];
 /// - Indices 2..n are internal nodes
 /// - Indices n..2n are leaves
 #[derive(Clone, Debug)]
-pub struct MerkleTree {
+pub struct MerkleTreeGeneric<H: HashFunction> {
     /// The number of leaves.
     n: usize,
     /// Array of 2*n digests.
     nodes: Vec<MerkleDigest>,
+    /// Phantom data for the hash function type.
+    _hash: PhantomData<H>,
 }
 
-impl MerkleTree {
+impl<H: HashFunction> MerkleTreeGeneric<H> {
     /// Create a new Merkle tree with the given number of leaves.
     pub fn new(n: usize) -> Self {
         assert!(n > 0, "Merkle tree must have at least one leaf");
         Self {
             n,
             nodes: vec![[0u8; 32]; 2 * n],
+            _hash: PhantomData,
         }
     }
 
@@ -47,7 +57,7 @@ impl MerkleTree {
         for i in (1..self.n).rev() {
             let left = &self.nodes[2 * i];
             let right = &self.nodes[2 * i + 1];
-            self.nodes[i] = hash_pair(left, right);
+            self.nodes[i] = H::hash_pair(left, right);
         }
         self.root()
     }
@@ -108,6 +118,9 @@ impl MerkleTree {
     }
 }
 
+/// Type alias for the default Merkle tree (uses DefaultHash).
+pub type MerkleTree = MerkleTreeGeneric<DefaultHash>;
+
 /// A compressed Merkle proof for batch verification.
 #[derive(Clone, Debug)]
 pub struct MerkleProof {
@@ -154,11 +167,8 @@ impl MerkleProof {
     }
 }
 
-/// Verify a compressed Merkle proof.
-///
-/// Verifies that the given leaf digests at the specified indices
-/// belong to a tree with the given root.
-pub fn verify_merkle(
+/// Verify a compressed Merkle proof using a specific hash function.
+pub fn verify_merkle_generic<H: HashFunction>(
     root: &MerkleDigest,
     n: usize,
     leaf_digests: &[MerkleDigest],
@@ -220,13 +230,24 @@ pub fn verify_merkle(
     // Recompute internal nodes from leaves to root
     for i in (1..n).rev() {
         if defined[2 * i] && defined[2 * i + 1] {
-            tmp[i] = hash_pair(&tmp[2 * i], &tmp[2 * i + 1]);
+            tmp[i] = H::hash_pair(&tmp[2 * i], &tmp[2 * i + 1]);
             defined[i] = true;
         }
     }
 
     // Check root
     defined[1] && tmp[1] == *root
+}
+
+/// Verify a compressed Merkle proof using the default hash function.
+pub fn verify_merkle(
+    root: &MerkleDigest,
+    n: usize,
+    leaf_digests: &[MerkleDigest],
+    indices: &[usize],
+    proof: &MerkleProof,
+) -> bool {
+    verify_merkle_generic::<DefaultHash>(root, n, leaf_digests, indices, proof)
 }
 
 /// Mark tree nodes for verification.
@@ -244,24 +265,30 @@ fn mark_tree_verify(indices: &[usize], n: usize) -> Vec<bool> {
     marked
 }
 
-/// Hash two digests together.
+/// Hash two digests together using the default hash function.
 pub fn hash_pair(left: &MerkleDigest, right: &MerkleDigest) -> MerkleDigest {
-    let mut hasher = Sha256::new();
-    hasher.update(left);
-    hasher.update(right);
-    hasher.finalize().into()
+    DefaultHash::hash_pair(left, right)
 }
 
-/// Hash arbitrary data to a digest.
+/// Hash arbitrary data to a digest using the default hash function.
 pub fn hash_data(data: &[u8]) -> MerkleDigest {
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    hasher.finalize().into()
+    DefaultHash::hash(data)
+}
+
+/// Hash two digests together using a specific hash function.
+pub fn hash_pair_with<H: HashFunction>(left: &MerkleDigest, right: &MerkleDigest) -> MerkleDigest {
+    H::hash_pair(left, right)
+}
+
+/// Hash arbitrary data to a digest using a specific hash function.
+pub fn hash_data_with<H: HashFunction>(data: &[u8]) -> MerkleDigest {
+    H::hash(data)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hash::Sha256Hash;
 
     #[test]
     fn test_merkle_basic() {
@@ -327,7 +354,10 @@ mod tests {
 
     #[test]
     fn test_merkle_spec_vector_1() {
-        // From the spec test vectors
+        // From the spec test vectors (SHA-256)
+        // This test uses SHA-256 explicitly to match the spec
+        let mut tree = MerkleTreeGeneric::<Sha256Hash>::new(5);
+
         let leaves = vec![
             hex::decode("4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a")
                 .unwrap(),
@@ -345,7 +375,6 @@ mod tests {
             hex::decode("f22f4501ffd3bdffcecc9e4cd6828a4479aeedd6aa484eb7c1f808ccf71c6e76")
                 .unwrap();
 
-        let mut tree = MerkleTree::new(5);
         for (i, leaf) in leaves.iter().enumerate() {
             let mut digest = [0u8; 32];
             digest.copy_from_slice(leaf);
@@ -354,5 +383,31 @@ mod tests {
 
         let root = tree.build();
         assert_eq!(root.to_vec(), expected_root);
+    }
+
+    #[cfg(feature = "blake3_hash")]
+    #[test]
+    fn test_merkle_blake3() {
+        use crate::hash::Blake3Hash;
+
+        let mut tree = MerkleTreeGeneric::<Blake3Hash>::new(4);
+
+        // Set leaves using BLAKE3
+        tree.set_leaf(0, Blake3Hash::hash(b"leaf0"));
+        tree.set_leaf(1, Blake3Hash::hash(b"leaf1"));
+        tree.set_leaf(2, Blake3Hash::hash(b"leaf2"));
+        tree.set_leaf(3, Blake3Hash::hash(b"leaf3"));
+
+        let root = tree.build();
+
+        // Verify a proof for leaf 0
+        let proof = tree.compressed_proof(&[0]);
+        assert!(verify_merkle_generic::<Blake3Hash>(
+            &root,
+            4,
+            &[Blake3Hash::hash(b"leaf0")],
+            &[0],
+            &proof
+        ));
     }
 }
