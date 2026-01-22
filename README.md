@@ -2,6 +2,8 @@
 
 A Rust implementation of the Longfellow zero-knowledge proof system based on the IETF draft specification.
 
+⚠️ This is experimental and written by Claude. It has had almost no review. Do not use for real applications yet.
+
 ## Overview
 
 Longfellow is a succinct non-interactive zero-knowledge (SNARK) proof system that combines:
