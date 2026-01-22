@@ -6,7 +6,8 @@
 //! - abetterinternet/zk-cred-longfellow (Rust)
 
 use longfellow_zk::field::Fp128;
-use longfellow_zk::merkle::{hash_data, hash_pair, MerkleTree};
+use longfellow_zk::hash::{HashFunction, Sha256Hash};
+use longfellow_zk::merkle::{hash_pair, MerkleTreeGeneric};
 use longfellow_zk::polynomial::{extend, Polynomial};
 use longfellow_zk::transcript::Transcript;
 use longfellow_zk::{LigeroParams, LigeroProof};
@@ -102,8 +103,8 @@ fn test_field_inversion() {
 /// Test SHA-256 hash consistency for Merkle tree.
 #[test]
 fn test_sha256_hash_consistency() {
-    // Hash of empty data
-    let empty_hash = hash_data(&[]);
+    // Hash of empty data using SHA-256 explicitly
+    let empty_hash = Sha256Hash::hash(&[]);
     assert_eq!(
         empty_hash.len(),
         32,
@@ -112,7 +113,7 @@ fn test_sha256_hash_consistency() {
 
     // Known SHA-256 test vector
     // SHA256("abc") = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
-    let abc_hash = hash_data(b"abc");
+    let abc_hash = Sha256Hash::hash(b"abc");
     let expected: [u8; 32] = [
         0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea,
         0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22, 0x23,
@@ -128,7 +129,8 @@ fn test_merkle_pair_hash() {
     let left = [0u8; 32];
     let right = [1u8; 32];
 
-    let result = hash_pair(&left, &right);
+    // Use SHA-256 explicitly for spec compatibility
+    let result = Sha256Hash::hash_pair(&left, &right);
     assert_eq!(result.len(), 32, "Pair hash should be 32 bytes");
 
     // Verify it's not just concatenation
@@ -136,19 +138,23 @@ fn test_merkle_pair_hash() {
     assert_ne!(&result[..], &right[..], "Pair hash should not equal right");
 
     // Verify determinism
-    let result2 = hash_pair(&left, &right);
+    let result2 = Sha256Hash::hash_pair(&left, &right);
     assert_eq!(result, result2, "Pair hash should be deterministic");
 
     // Verify order matters
-    let result_swapped = hash_pair(&right, &left);
+    let result_swapped = Sha256Hash::hash_pair(&right, &left);
     assert_ne!(result, result_swapped, "Pair hash should be order-sensitive");
+
+    // Also test with the default hash_pair function
+    let default_result = hash_pair(&left, &right);
+    assert_eq!(default_result.len(), 32, "Default pair hash should be 32 bytes");
 }
 
 /// Test Merkle tree with known test vector.
-/// This uses the test vector from the spec.
+/// This uses the test vector from the spec (SHA-256).
 #[test]
 fn test_merkle_tree_known_vector() {
-    // Test vector from the Longfellow spec
+    // Test vector from the Longfellow spec (requires SHA-256)
     let leaves: Vec<[u8; 32]> = vec![
         hex::decode("4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a")
             .unwrap().try_into().unwrap(),
@@ -162,7 +168,8 @@ fn test_merkle_tree_known_vector() {
             .unwrap().try_into().unwrap(),
     ];
 
-    let mut tree = MerkleTree::new(5);
+    // Use SHA-256 explicitly to match spec test vector
+    let mut tree = MerkleTreeGeneric::<Sha256Hash>::new(5);
     for (i, leaf) in leaves.iter().enumerate() {
         tree.set_leaf(i, *leaf);
     }

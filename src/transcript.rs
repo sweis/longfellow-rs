@@ -1,40 +1,50 @@
 //! Fiat-Shamir transcript for non-interactive proofs.
 //!
 //! This module implements the Fiat-Shamir heuristic to transform an interactive
-//! proof protocol into a non-interactive one using SHA-256.
+//! proof protocol into a non-interactive one using a cryptographic hash function.
+//!
+//! # Hash Functions
+//!
+//! By default, the transcript uses SHA-256 as required by the spec.
+//! When the `blake3_hash` feature is enabled, BLAKE3 is used instead
+//! for improved performance.
 
 use crate::field::Field;
-use sha2::{Digest, Sha256};
+use crate::hash::{DefaultHash, HashDigest, HashFunction};
+use std::marker::PhantomData;
 
-/// A Fiat-Shamir transcript for generating verifier challenges.
+/// A Fiat-Shamir transcript generic over the hash function.
 ///
 /// The transcript accumulates all messages exchanged between prover and verifier,
 /// and uses a cryptographic hash function to generate pseudorandom challenges.
 #[derive(Clone)]
-pub struct Transcript {
-    /// The running hash state.
-    hasher: Sha256,
+pub struct TranscriptGeneric<H: HashFunction> {
+    /// The current hash state (accumulated data).
+    state: Vec<u8>,
     /// Buffer for generating multiple challenges from a single hash.
     challenge_buffer: Vec<u8>,
     /// Current position in the challenge buffer.
     buffer_pos: usize,
+    /// Phantom data for the hash function type.
+    _hash: PhantomData<H>,
 }
 
-impl Transcript {
+impl<H: HashFunction> TranscriptGeneric<H> {
     /// Create a new transcript with a domain separator.
     ///
     /// The domain separator ensures that transcripts for different protocols
     /// are distinct even if they have the same messages.
     pub fn new(domain_separator: &[u8]) -> Self {
-        let mut hasher = Sha256::new();
+        let mut state = Vec::new();
         // Write the length of the domain separator followed by its contents
-        hasher.update((domain_separator.len() as u32).to_le_bytes());
-        hasher.update(domain_separator);
+        state.extend_from_slice(&(domain_separator.len() as u32).to_le_bytes());
+        state.extend_from_slice(domain_separator);
 
         Self {
-            hasher,
+            state,
             challenge_buffer: Vec::new(),
             buffer_pos: 0,
+            _hash: PhantomData,
         }
     }
 
@@ -45,8 +55,8 @@ impl Transcript {
         self.buffer_pos = 0;
 
         // Write length-prefixed data
-        self.hasher.update((data.len() as u64).to_le_bytes());
-        self.hasher.update(data);
+        self.state.extend_from_slice(&(data.len() as u64).to_le_bytes());
+        self.state.extend_from_slice(data);
     }
 
     /// Write a field element to the transcript.
@@ -61,12 +71,11 @@ impl Transcript {
         self.challenge_buffer.clear();
         self.buffer_pos = 0;
 
-        self.hasher.update((elements.len() as u64).to_le_bytes());
+        self.state.extend_from_slice(&(elements.len() as u64).to_le_bytes());
         for elem in elements {
             let bytes = elem.to_bytes();
-            self.hasher
-                .update((bytes.len() as u64).to_le_bytes());
-            self.hasher.update(&bytes);
+            self.state.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+            self.state.extend_from_slice(&bytes);
         }
     }
 
@@ -101,15 +110,14 @@ impl Transcript {
 
     /// Extend the challenge buffer by hashing the current state.
     fn extend_challenge_buffer(&mut self) {
-        // Clone the hasher to get the current state
-        let mut h = self.hasher.clone();
-
         // Add a counter to ensure different extensions produce different output
         let counter = (self.challenge_buffer.len() / 32) as u64;
-        h.update(counter.to_le_bytes());
 
-        // Finalize and append to buffer
-        let digest = h.finalize();
+        let mut hasher = H::new();
+        hasher.update(&self.state);
+        hasher.update(&counter.to_le_bytes());
+
+        let digest: HashDigest = hasher.finalize();
         self.challenge_buffer.extend_from_slice(&digest);
     }
 
@@ -174,10 +182,14 @@ impl Transcript {
     }
 }
 
+/// Type alias for the default Transcript (uses DefaultHash).
+pub type Transcript = TranscriptGeneric<DefaultHash>;
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::field::Fp128;
+    use crate::hash::Sha256Hash;
 
     #[test]
     fn test_transcript_determinism() {
@@ -232,5 +244,55 @@ mod tests {
 
         let challenge: Fp128 = t.generate_challenge();
         assert!(!challenge.is_zero());
+    }
+
+    #[test]
+    fn test_sha256_transcript_explicit() {
+        // Test using SHA-256 explicitly
+        let mut t1 = TranscriptGeneric::<Sha256Hash>::new(b"test");
+        let mut t2 = TranscriptGeneric::<Sha256Hash>::new(b"test");
+
+        t1.write_bytes(&[1, 2, 3]);
+        t2.write_bytes(&[1, 2, 3]);
+
+        let c1: Fp128 = t1.generate_challenge();
+        let c2: Fp128 = t2.generate_challenge();
+
+        assert_eq!(c1, c2);
+    }
+
+    #[cfg(feature = "blake3_hash")]
+    #[test]
+    fn test_blake3_transcript() {
+        use crate::hash::Blake3Hash;
+
+        let mut t1 = TranscriptGeneric::<Blake3Hash>::new(b"test");
+        let mut t2 = TranscriptGeneric::<Blake3Hash>::new(b"test");
+
+        t1.write_bytes(&[1, 2, 3]);
+        t2.write_bytes(&[1, 2, 3]);
+
+        let c1: Fp128 = t1.generate_challenge();
+        let c2: Fp128 = t2.generate_challenge();
+
+        assert_eq!(c1, c2);
+    }
+
+    #[cfg(feature = "blake3_hash")]
+    #[test]
+    fn test_different_hash_different_output() {
+        use crate::hash::Blake3Hash;
+
+        let mut t_sha = TranscriptGeneric::<Sha256Hash>::new(b"test");
+        let mut t_blake = TranscriptGeneric::<Blake3Hash>::new(b"test");
+
+        t_sha.write_bytes(&[1, 2, 3]);
+        t_blake.write_bytes(&[1, 2, 3]);
+
+        let c_sha: Fp128 = t_sha.generate_challenge();
+        let c_blake: Fp128 = t_blake.generate_challenge();
+
+        // Different hash functions should produce different challenges
+        assert_ne!(c_sha, c_blake);
     }
 }

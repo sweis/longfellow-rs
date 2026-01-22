@@ -62,6 +62,31 @@ Benchmarked on: Linux 4.4.0, release build with optimizations enabled.
 | generate_challenges(10)| 819 ns    |
 | write_field_element    | 60.0 ns   |
 
+### Hash Function Comparison (SHA-256 vs BLAKE3)
+
+Enable BLAKE3 with: `cargo build --features blake3_hash`
+
+| Operation        | SHA-256    | BLAKE3     | Speedup |
+|------------------|------------|------------|---------|
+| hash_64B         | 173 ns     | 119 ns     | **1.45x** |
+| hash_256B        | 318 ns     | 323 ns     | 0.98x   |
+| hash_1KB         | 885 ns     | 1.12 µs    | 0.79x   |
+| hash_pair (64B)  | 154 ns     | 125 ns     | **1.23x** |
+
+**Merkle Tree Build (with different hash functions):**
+
+| Leaves | SHA-256    | BLAKE3     | Speedup |
+|--------|------------|------------|---------|
+| 64     | 7.41 µs    | 6.76 µs    | **1.10x** |
+| 256    | 29.0 µs    | 27.7 µs    | **1.05x** |
+| 1024   | 117.7 µs   | 116.2 µs   | 1.01x   |
+
+**Key observations:**
+- BLAKE3 is faster for small data (64B) by ~45%, which benefits Merkle tree operations
+- For `hash_pair` (the core Merkle tree operation), BLAKE3 is ~23% faster
+- SHA-256 is slightly faster for larger data (1KB+) due to BLAKE3's initialization overhead
+- Overall Merkle tree build is 5-10% faster with BLAKE3 for typical sizes
+
 ### Ligero Commitment
 
 | Witness Size | Commit Time | Throughput       |
@@ -185,9 +210,35 @@ cargo bench -- "Field"
 cargo bench -- "Polynomial"
 cargo bench -- "Simple Proof"
 
+# Run with BLAKE3 hash function
+cargo bench --features blake3_hash
+
+# Compare hash functions
+cargo bench --features blake3_hash -- "Hash Comparison"
+
 # Generate HTML report
 cargo bench -- --save-baseline current
 ```
+
+## Using BLAKE3 for Better Performance
+
+Enable BLAKE3 as the default hash function for improved performance:
+
+```bash
+# Build with BLAKE3
+cargo build --features blake3_hash --release
+
+# Run tests with BLAKE3
+cargo test --features blake3_hash
+
+# In Cargo.toml:
+[dependencies]
+longfellow-zk = { version = "0.1", features = ["blake3_hash"] }
+```
+
+**Note:** BLAKE3 provides ~10% faster Merkle tree operations but produces
+different hashes than SHA-256. Use SHA-256 (the default) for compatibility
+with the spec and other implementations.
 
 ## Tracking Progress
 

@@ -75,6 +75,7 @@
 
 pub mod circuit;
 pub mod field;
+pub mod hash;
 pub mod ligero;
 pub mod merkle;
 pub mod polynomial;
@@ -85,8 +86,11 @@ pub mod zk;
 // Re-export commonly used types
 pub use circuit::{Circuit, CircuitBuilder, Layer, LayerBuilder, QuadTerm};
 pub use field::{batch_invert, Field, Fp128};
+pub use hash::{DefaultHash, HashDigest, HashFunction, Sha256Hash};
+#[cfg(feature = "blake3_hash")]
+pub use hash::Blake3Hash;
 pub use ligero::{LigeroCommitment, LigeroParams, LigeroProof, LigeroProver};
-pub use merkle::{MerkleDigest, MerkleProof, MerkleTree};
+pub use merkle::{MerkleDigest, MerkleProof, MerkleTree, MerkleTreeGeneric};
 pub use sumcheck::SumcheckProof;
 pub use transcript::Transcript;
 pub use zk::{ZkParams, ZkProof, ZkProver, verify_zk};
