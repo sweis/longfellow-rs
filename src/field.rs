@@ -142,8 +142,46 @@ impl Fp128 {
     }
 
     /// Square the field element.
+    ///
+    /// This is an optimized squaring operation that uses the fact that
+    /// a^2 = a_hi^2 * 2^128 + 2*a_hi*a_lo * 2^64 + a_lo^2,
+    /// requiring only 3 multiplications instead of 4 for general multiplication.
     pub fn square(&self) -> Self {
-        *self * *self
+        // Compute 256-bit square as four 64-bit limbs
+        // a^2 = (a_lo + a_hi * 2^64)^2
+        //     = a_lo^2 + 2*a_lo*a_hi * 2^64 + a_hi^2 * 2^128
+        let a0 = self.lo as u128;
+        let a1 = self.hi as u128;
+
+        // Partial products (3 instead of 4)
+        let p00 = a0 * a0;          // a_lo^2, bits 0-127
+        let p01 = a0 * a1;          // a_lo*a_hi, bits 64-191
+        let p11 = a1 * a1;          // a_hi^2, bits 128-255
+
+        // Combine into 256-bit result: [r0, r1, r2, r3]
+        // result = r0 + r1*2^64 + r2*2^128 + r3*2^192
+        // p01 appears twice (2*a_lo*a_hi), so we add it shifted left by 1 bit
+
+        let r0 = p00 as u64;
+        let carry0 = p00 >> 64;
+
+        // p01 * 2 = 2*a_lo*a_hi at position 64
+        // Check for overflow when doubling p01
+        let p01_doubled = p01 << 1;
+        let p01_doubled_overflow = (p01 >> 127) as u64; // 1 if p01 had bit 127 set
+
+        let mid = carry0 + (p01_doubled as u64) as u128;
+        let r1 = mid as u64;
+        let carry1 = mid >> 64;
+
+        let high = carry1 + (p01_doubled >> 64) + (p11 as u64) as u128 + (p01_doubled_overflow as u128) * (1u128 << 64);
+        let r2 = high as u64;
+        let carry2 = high >> 64;
+
+        let r3 = (carry2 + (p11 >> 64)) as u64;
+
+        // Reduce mod p = 2^128 - 2^108 + 1
+        reduce_256_to_fp128(r0, r1, r2, r3)
     }
 
     /// Compute self^exp using square-and-multiply.
@@ -485,6 +523,65 @@ impl std::iter::Product for Fp128 {
     }
 }
 
+/// Batch inversion using Montgomery's trick.
+///
+/// Given a slice of field elements [a_0, a_1, ..., a_{n-1}], computes
+/// [a_0^{-1}, a_1^{-1}, ..., a_{n-1}^{-1}] using only one field inversion
+/// and 3(n-1) multiplications.
+///
+/// Returns None if any element is zero.
+pub fn batch_invert<F: Field>(elements: &[F]) -> Option<Vec<F>> {
+    let n = elements.len();
+    if n == 0 {
+        return Some(vec![]);
+    }
+
+    // Check for zeros
+    for e in elements {
+        if e.is_zero() {
+            return None;
+        }
+    }
+
+    if n == 1 {
+        return Some(vec![elements[0].invert()?]);
+    }
+
+    // Compute prefix products: prefix[i] = a_0 * a_1 * ... * a_i
+    let mut prefix = Vec::with_capacity(n);
+    prefix.push(elements[0]);
+    for i in 1..n {
+        prefix.push(prefix[i - 1] * elements[i]);
+    }
+
+    // Invert the total product
+    let mut inv = prefix[n - 1].invert()?;
+
+    // Compute inverses from right to left
+    let mut result = vec![F::ZERO; n];
+    for i in (1..n).rev() {
+        // result[i] = (a_0 * ... * a_{i-1})^{-1} * (a_{i+1} * ... * a_{n-1})^{-1}
+        //           = prefix[i-1] * suffix_inv
+        result[i] = prefix[i - 1] * inv;
+        // Update suffix inverse: suffix_inv = a_i * suffix_inv_{i+1}
+        inv = inv * elements[i];
+    }
+    result[0] = inv;
+
+    Some(result)
+}
+
+/// Batch inversion in place, modifying the input slice.
+/// Returns false if any element is zero.
+pub fn batch_invert_inplace<F: Field>(elements: &mut [F]) -> bool {
+    if let Some(inverted) = batch_invert(elements) {
+        elements.copy_from_slice(&inverted);
+        true
+    } else {
+        false
+    }
+}
+
 /// Trait for field elements used in the Longfellow ZK scheme.
 pub trait Field:
     Sized
@@ -626,5 +723,79 @@ mod tests {
     fn test_two() {
         let two = Fp128::from_u64(2);
         assert_eq!(two, Fp128::ONE + Fp128::ONE);
+    }
+
+    #[test]
+    fn test_batch_invert() {
+        // Test batch inversion
+        let elements = vec![
+            Fp128::from_u64(2),
+            Fp128::from_u64(3),
+            Fp128::from_u64(5),
+            Fp128::from_u64(7),
+            Fp128::from_u64(11),
+        ];
+
+        let inverted = super::batch_invert(&elements).unwrap();
+
+        // Verify each inverse
+        for (a, a_inv) in elements.iter().zip(inverted.iter()) {
+            assert_eq!(*a * *a_inv, Fp128::ONE);
+        }
+    }
+
+    #[test]
+    fn test_batch_invert_single() {
+        let elements = vec![Fp128::from_u64(7)];
+        let inverted = super::batch_invert(&elements).unwrap();
+        assert_eq!(elements[0] * inverted[0], Fp128::ONE);
+    }
+
+    #[test]
+    fn test_batch_invert_empty() {
+        let elements: Vec<Fp128> = vec![];
+        let inverted = super::batch_invert(&elements).unwrap();
+        assert!(inverted.is_empty());
+    }
+
+    #[test]
+    fn test_batch_invert_zero() {
+        let elements = vec![Fp128::from_u64(2), Fp128::ZERO, Fp128::from_u64(3)];
+        assert!(super::batch_invert(&elements).is_none());
+    }
+
+    #[test]
+    fn test_optimized_squaring() {
+        // Test that optimized squaring matches multiplication
+        let test_values = [
+            Fp128::from_u64(0),
+            Fp128::from_u64(1),
+            Fp128::from_u64(2),
+            Fp128::from_u64(7),
+            Fp128::from_u64(12345),
+            Fp128::from_u64(0xFFFFFFFFFFFFFFFF),
+            Fp128::from_raw([0xFFFFFFFFFFFFFFFF, 0x00000F0000000000]),
+            Fp128::from_raw([0x123456789ABCDEF0, 0x00000FEDCBA98765]),
+        ];
+
+        for &a in &test_values {
+            let squared = a.square();
+            let multiplied = a * a;
+            assert_eq!(squared, multiplied, "Squaring mismatch for {:?}", a);
+        }
+    }
+
+    #[test]
+    fn test_squaring_random() {
+        use rand::SeedableRng;
+        use rand_chacha::ChaCha20Rng;
+        let mut rng = ChaCha20Rng::seed_from_u64(42);
+
+        for _ in 0..100 {
+            let a = Fp128::random(&mut rng);
+            let squared = a.square();
+            let multiplied = a * a;
+            assert_eq!(squared, multiplied);
+        }
     }
 }

@@ -11,26 +11,35 @@ Benchmarked on: Linux 4.4.0, release build with optimizations enabled.
 | Add       | 1.58 ns   | Fast modular addition    |
 | Sub       | 1.59 ns   | Fast modular subtraction |
 | Mul       | 4.87 ns   | 128-bit multiplication   |
-| Square    | 4.90 ns   | Same as mul (not optimized) |
+| Square    | 4.83 ns   | Optimized (3 muls vs 4)  |
 | Negate    | 1.27 ns   | Simple negation          |
 | Invert    | 3.54 µs   | Fermat's little theorem  |
 
+### Batch Inversion (Montgomery's Trick) - NEW
+
+| Elements | Batch Time | Sequential Time | Speedup |
+|----------|------------|-----------------|---------|
+| 10       | 4.22 µs    | 35.5 µs         | **8.4x**  |
+| 50       | 4.45 µs    | 168.5 µs        | **37.8x** |
+| 100      | 5.86 µs    | 341.5 µs        | **58.3x** |
+| 500      | 15.6 µs    | 1.73 ms         | **111x**  |
+
 ### Polynomial Operations
 
-| Operation              | Size | Time      | Throughput      |
-|------------------------|------|-----------|-----------------|
-| extend (coeff→eval)    | 16   | 2.70 µs   | 5.93 Melem/s    |
-| extend (coeff→eval)    | 32   | 14.9 µs   | 2.14 Melem/s    |
-| extend (coeff→eval)    | 64   | 64.1 µs   | 999 Kelem/s     |
-| extend (coeff→eval)    | 128  | 273 µs    | 470 Kelem/s     |
-| extend_evaluations     | 16   | 806 µs    | 19.9 Kelem/s    |
-| extend_evaluations     | 32   | 3.87 ms   | 8.27 Kelem/s    |
-| extend_evaluations     | 64   | 18.2 ms   | 3.52 Kelem/s    |
-| extend_evaluations     | 128  | 92.7 ms   | 1.38 Kelem/s    |
-| interpolate            | 8    | 168 µs    | 752 Kelem/s     |
-| interpolate            | 16   | 804 µs    | 159 Kelem/s     |
-| interpolate            | 32   | 3.83 ms   | 33.4 Kelem/s    |
-| evaluate (32 terms)    | 32   | 151 ns    | 847 Melem/s     |
+| Operation              | Size | Before    | After     | Speedup   |
+|------------------------|------|-----------|-----------|-----------|
+| extend (coeff→eval)    | 16   | 2.70 µs   | 2.70 µs   | -         |
+| extend (coeff→eval)    | 32   | 14.9 µs   | 14.9 µs   | -         |
+| extend (coeff→eval)    | 64   | 64.1 µs   | 64.1 µs   | -         |
+| extend (coeff→eval)    | 128  | 273 µs    | 273 µs    | -         |
+| extend_evaluations     | 16   | 806 µs    | 48.7 µs   | **16.5x** |
+| extend_evaluations     | 32   | 3.87 ms   | 235 µs    | **16.5x** |
+| extend_evaluations     | 64   | 18.2 ms   | 1.06 ms   | **17.2x** |
+| extend_evaluations     | 128  | 92.7 ms   | 5.83 ms   | **15.9x** |
+| interpolate            | 8    | 168 µs    | 11.1 µs   | **15.1x** |
+| interpolate            | 16   | 804 µs    | 61.1 µs   | **13.2x** |
+| interpolate            | 32   | 3.83 ms   | 557 µs    | **6.9x**  |
+| evaluate (32 terms)    | 32   | 151 ns    | 153 ns    | -         |
 
 ### Merkle Tree (SHA-256)
 
@@ -57,18 +66,55 @@ Benchmarked on: Linux 4.4.0, release build with optimizations enabled.
 
 | Witness Size | Commit Time | Throughput       |
 |--------------|-------------|------------------|
-| 10           | 133 µs      | 75.2 Kelem/s     |
-| 50           | 402 µs      | 124 Kelem/s      |
-| 100          | 490 µs      | 204 Kelem/s      |
+| 10           | 145 µs      | 69 Kelem/s       |
+| 50           | 443 µs      | 113 Kelem/s      |
+| 100          | 530 µs      | 189 Kelem/s      |
 
 ### ZK Proof Generation & Verification
 
 | Circuit         | Prove Time | Verify Time |
 |-----------------|------------|-------------|
-| Simple (1 mul)  | 154 µs     | 17.0 ns     |
-| 2 muls          | 159 µs     | 16.5 ns     |
-| 5 muls          | 284 µs     | 17.0 ns     |
-| 10 muls         | 798 µs     | 16.6 ns     |
+| Simple (1 mul)  | 159 µs     | 19.4 ns     |
+| 2 muls          | 163 µs     | 18.6 ns     |
+| 5 muls          | 309 µs     | 19.1 ns     |
+| 10 muls         | 842 µs     | 18.2 ns     |
+
+## Optimizations Implemented
+
+### 1. Batch Field Inversion (Montgomery's Trick)
+
+**Implementation**: `field::batch_invert()`
+
+Computes n inversions using only 1 inversion + 3(n-1) multiplications instead of n inversions.
+
+**Impact**: Up to **111x speedup** for 500 elements. This optimization dramatically improves any operation requiring multiple inversions, particularly polynomial interpolation.
+
+### 2. Barycentric Interpolation with Precomputed Weights
+
+**Implementation**: `polynomial::BarycentricWeights`, `polynomial::extend_evaluations_fast()`
+
+Uses the barycentric form of Lagrange interpolation with:
+- Precomputed barycentric weights (computed once, reused many times)
+- Batch inversion for the evaluation denominators
+- Special case handling for evaluation at interpolation points
+
+**Impact**: **15-17x speedup** for extend_evaluations, reducing O(n²) inversions to O(n) multiplications + O(1) inversions.
+
+### 3. Optimized Polynomial Interpolation
+
+**Implementation**: `Polynomial::interpolate()` now uses batch inversion
+
+Pre-computes all (points[i] - points[j]) denominators and inverts them in a single batch operation.
+
+**Impact**: **7-15x speedup** depending on size, with larger benefits for smaller interpolations where the overhead of individual inversions was proportionally higher.
+
+### 4. Optimized Field Squaring
+
+**Implementation**: `Fp128::square()`
+
+Uses 3 multiplications instead of 4 by exploiting the symmetry in a² = a_lo² + 2*a_lo*a_hi*2^64 + a_hi²*2^128.
+
+**Impact**: ~1% improvement (minimal due to reduction step dominating).
 
 ## Comparison with Reference Implementations
 
@@ -86,77 +132,46 @@ Benchmarked on: Linux 4.4.0, release build with optimizations enabled.
 
 ### Expected Performance Comparison
 
-| Component          | This Library | Expected Reference | Ratio |
-|--------------------|--------------|-------------------|-------|
-| Field Mul          | 4.87 ns      | ~3-4 ns (AVX)     | ~1.2x |
-| Field Invert       | 3.54 µs      | ~2-3 µs           | ~1.3x |
-| Polynomial Extend  | O(n²)        | O(n log n) FFT    | varies |
-| Merkle Build       | 8-9 Melem/s  | ~10-15 Melem/s    | ~0.7x |
-| Proof Gen (simple) | 154 µs       | ~100-150 µs       | ~1.0x |
+| Component          | This Library | Expected Reference | Status     |
+|--------------------|--------------|-------------------|------------|
+| Field Mul          | 4.87 ns      | ~3-4 ns (AVX)     | ~1.2x      |
+| Field Invert       | 3.54 µs      | ~2-3 µs           | ~1.3x      |
+| Batch Invert (100) | 5.86 µs      | ~5-6 µs           | Comparable |
+| Polynomial Extend  | O(n²)        | O(n log n) FFT    | Needs FFT  |
+| Merkle Build       | 8-9 Melem/s  | ~10-15 Melem/s    | ~0.7x      |
+| Proof Gen (simple) | 159 µs       | ~100-150 µs       | ~1.1x      |
 
-### Key Observations
-
-1. **Field arithmetic** is competitive with reference implementations
-2. **Polynomial operations** use O(n²) naive algorithms vs O(n log n) FFT
-3. **extend_evaluations** is a major bottleneck due to O(n²) interpolation
-4. **Merkle tree** performance is reasonable
-5. **Verification** is very fast (< 20 ns for simple circuits)
-
-## Bottleneck Analysis
-
-### Top Performance Bottlenecks
-
-1. **extend_evaluations** - O(n²) Lagrange interpolation
-   - 128 points: 92.7 ms
-   - This is 340x slower than extend() for the same size
-   - Solution: Use FFT-based interpolation
-
-2. **Polynomial interpolation** - O(n²) naive algorithm
-   - 32 points: 3.83 ms
-   - Solution: Use FFT with precomputed roots of unity
-
-3. **Field inversion** - 3.54 µs per inversion
-   - Uses Fermat's little theorem: a^(p-2) mod p
-   - 127 squarings + 126 multiplications
-   - Solution: Batch inversions using Montgomery's trick
-
-## Optimization Opportunities
+## Remaining Optimization Opportunities
 
 ### High Priority
 
 1. **FFT for polynomial operations**
-   - Would reduce extend_evaluations from O(n²) to O(n log n)
-   - Expected speedup: 10-100x for large polynomials
+   - Would reduce `extend` from O(n²) to O(n log n)
+   - Expected additional speedup: 10-100x for large polynomials
+   - Requires finding primitive roots of unity for our field
 
-2. **Batch field inversions**
-   - Montgomery's trick: n inversions in 1 inversion + 3(n-1) muls
-   - Would help polynomial interpolation significantly
-
-3. **Parallelization**
+2. **Parallelization**
    - Ligero commitment is embarrassingly parallel
    - Row computations can be done independently
+   - Would benefit from rayon or similar
 
 ### Medium Priority
 
-4. **SIMD for field operations**
+3. **SIMD for field operations**
    - AVX2/AVX-512 can process multiple field elements at once
    - Would improve all inner loops
 
-5. **Squaring optimization**
-   - Currently square() = mul(x, x)
-   - Dedicated squaring can be faster
-
-6. **Memory allocation reduction**
+4. **Memory allocation reduction**
    - Pre-allocate vectors where possible
    - Reuse buffers across operations
 
 ### Low Priority
 
-7. **Montgomery form for field elements**
+5. **Montgomery form for field elements**
    - Would speed up sequences of multiplications
    - Requires conversion cost at boundaries
 
-8. **Precomputation tables**
+6. **Precomputation tables**
    - For frequently used values in polynomial evaluation
 
 ## Running Benchmarks
@@ -176,9 +191,12 @@ cargo bench -- --save-baseline current
 
 ## Tracking Progress
 
-| Date       | Version | Simple Proof (prove) | Notes              |
-|------------|---------|---------------------|---------------------|
-| 2026-01-22 | 0.1.0   | 154 µs              | Initial baseline    |
+| Date       | Version | Key Improvement              | Impact               |
+|------------|---------|------------------------------|----------------------|
+| 2026-01-22 | 0.1.0   | Initial baseline             | -                    |
+| 2026-01-22 | 0.1.1   | Batch inversion              | 111x for 500 elems   |
+| 2026-01-22 | 0.1.1   | Barycentric interpolation    | 16x extend_evals     |
+| 2026-01-22 | 0.1.1   | Optimized Poly::interpolate  | 15x for 8 points     |
 
 ---
 

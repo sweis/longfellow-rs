@@ -84,7 +84,7 @@ pub mod zk;
 
 // Re-export commonly used types
 pub use circuit::{Circuit, CircuitBuilder, Layer, LayerBuilder, QuadTerm};
-pub use field::{Field, Fp128};
+pub use field::{batch_invert, Field, Fp128};
 pub use ligero::{LigeroCommitment, LigeroParams, LigeroProof, LigeroProver};
 pub use merkle::{MerkleDigest, MerkleProof, MerkleTree};
 pub use sumcheck::SumcheckProof;

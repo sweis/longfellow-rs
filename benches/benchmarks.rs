@@ -5,6 +5,7 @@
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId, Throughput};
 use longfellow_zk::{
+    batch_invert,
     circuit::{CircuitBuilder, LayerBuilder},
     field::Fp128,
     zk::{ZkProver, verify_zk},
@@ -45,6 +46,25 @@ fn bench_field_operations(c: &mut Criterion) {
     group.bench_function("negate", |bencher| {
         bencher.iter(|| -black_box(a))
     });
+
+    // Benchmark batch inversion
+    for size in [10, 50, 100, 500].iter() {
+        let elements: Vec<Fp128> = (1..=*size)
+            .map(|i| Fp128::from_u64(i as u64))
+            .collect();
+
+        group.bench_with_input(BenchmarkId::new("batch_invert", size), size, |b, _| {
+            b.iter(|| black_box(batch_invert(&elements)))
+        });
+
+        // Compare with sequential inversion
+        group.bench_with_input(BenchmarkId::new("sequential_invert", size), size, |b, _| {
+            b.iter(|| {
+                let result: Vec<_> = elements.iter().map(|e| e.invert().unwrap()).collect();
+                black_box(result)
+            })
+        });
+    }
 
     group.finish();
 }
