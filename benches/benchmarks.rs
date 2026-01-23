@@ -7,6 +7,7 @@ use criterion::{black_box, criterion_group, criterion_main, Criterion, Benchmark
 use longfellow_zk::{
     batch_invert,
     circuit::{CircuitBuilder, LayerBuilder},
+    fft::{fft, ifft, polynomial_multiply, FftDomain},
     field::Fp128,
     hash::{HashFunction, Sha256Hash},
     merkle::{MerkleTree, MerkleTreeGeneric},
@@ -360,6 +361,44 @@ fn bench_hash_comparison(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_fft(c: &mut Criterion) {
+    let mut group = c.benchmark_group("FFT");
+
+    // Test FFT at different sizes
+    for log_size in [6, 8, 10, 12].iter() {
+        let size = 1 << log_size;
+        let domain = FftDomain::new(size);
+
+        // Random coefficients
+        let mut rng = ChaCha20Rng::seed_from_u64(42);
+        let coeffs: Vec<Fp128> = (0..size).map(|_| Fp128::random(&mut rng)).collect();
+
+        group.throughput(Throughput::Elements(size as u64));
+
+        group.bench_with_input(BenchmarkId::new("fft", size), &size, |b, _| {
+            b.iter(|| black_box(fft(&coeffs, &domain)))
+        });
+
+        group.bench_with_input(BenchmarkId::new("ifft", size), &size, |b, _| {
+            let evals = fft(&coeffs, &domain);
+            b.iter(|| black_box(ifft(&evals, &domain)))
+        });
+    }
+
+    // Benchmark polynomial multiplication via FFT vs naive
+    for size in [32, 64, 128].iter() {
+        let mut rng = ChaCha20Rng::seed_from_u64(42);
+        let a: Vec<Fp128> = (0..*size).map(|_| Fp128::random(&mut rng)).collect();
+        let b: Vec<Fp128> = (0..*size).map(|_| Fp128::random(&mut rng)).collect();
+
+        group.bench_with_input(BenchmarkId::new("poly_mul_fft", size), size, |bench, _| {
+            bench.iter(|| black_box(polynomial_multiply(&a, &b)))
+        });
+    }
+
+    group.finish();
+}
+
 fn bench_merkle_hash_comparison(c: &mut Criterion) {
     let mut group = c.benchmark_group("Merkle Hash Comparison");
     group.sample_size(20);
@@ -402,6 +441,7 @@ criterion_group!(
     benches,
     bench_field_operations,
     bench_polynomial,
+    bench_fft,
     bench_merkle_tree,
     bench_transcript,
     bench_ligero,

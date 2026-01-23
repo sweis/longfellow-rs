@@ -87,6 +87,27 @@ Enable BLAKE3 with: `cargo build --features blake3_hash`
 - SHA-256 is slightly faster for larger data (1KB+) due to BLAKE3's initialization overhead
 - Overall Merkle tree build is 5-10% faster with BLAKE3 for typical sizes
 
+### FFT (Fast Fourier Transform)
+
+| Operation       | Size | Time     | Throughput      |
+|-----------------|------|----------|-----------------|
+| fft             | 64   | 2.45 µs  | 26.1 Melem/s    |
+| ifft            | 64   | 3.08 µs  | 20.8 Melem/s    |
+| fft             | 256  | 13.7 µs  | 18.7 Melem/s    |
+| ifft            | 256  | 16.2 µs  | 15.8 Melem/s    |
+| fft             | 1024 | 123 µs   | 8.35 Melem/s    |
+| ifft            | 1024 | 110 µs   | 9.31 Melem/s    |
+| fft             | 4096 | 697 µs   | 5.88 Melem/s    |
+| ifft            | 4096 | 723 µs   | 5.67 Melem/s    |
+
+**Polynomial Multiplication via FFT:**
+
+| Size | Time     | Throughput      |
+|------|----------|-----------------|
+| 32   | 15.6 µs  | 262 Melem/s     |
+| 64   | 28.5 µs  | 144 Melem/s     |
+| 128  | 58.2 µs  | 70.4 Melem/s    |
+
 ### Ligero Commitment
 
 | Witness Size | Commit Time | Throughput       |
@@ -106,7 +127,18 @@ Enable BLAKE3 with: `cargo build --features blake3_hash`
 
 ## Optimizations Implemented
 
-### 1. Batch Field Inversion (Montgomery's Trick)
+### 1. FFT (Fast Fourier Transform) - NEW
+
+**Implementation**: `fft` module with `FftDomain`, `fft()`, `ifft()`, `polynomial_multiply()`
+
+Implements radix-2 Cooley-Tukey FFT for O(n log n) polynomial operations:
+- Uses primitive roots of unity in Fp128 (2^k-th roots for k ≤ 108)
+- Precomputed twiddle factors for faster butterfly operations
+- In-place FFT with bit-reversal permutation
+
+**Impact**: O(n log n) polynomial multiplication instead of O(n²). For size-128 polynomials, multiplication takes ~58µs via FFT.
+
+### 2. Batch Field Inversion (Montgomery's Trick)
 
 **Implementation**: `field::batch_invert()`
 
@@ -114,7 +146,7 @@ Computes n inversions using only 1 inversion + 3(n-1) multiplications instead of
 
 **Impact**: Up to **111x speedup** for 500 elements. This optimization dramatically improves any operation requiring multiple inversions, particularly polynomial interpolation.
 
-### 2. Barycentric Interpolation with Precomputed Weights
+### 3. Barycentric Interpolation with Precomputed Weights
 
 **Implementation**: `polynomial::BarycentricWeights`, `polynomial::extend_evaluations_fast()`
 
@@ -125,7 +157,7 @@ Uses the barycentric form of Lagrange interpolation with:
 
 **Impact**: **15-17x speedup** for extend_evaluations, reducing O(n²) inversions to O(n) multiplications + O(1) inversions.
 
-### 3. Optimized Polynomial Interpolation
+### 4. Optimized Polynomial Interpolation
 
 **Implementation**: `Polynomial::interpolate()` now uses batch inversion
 
@@ -133,7 +165,7 @@ Pre-computes all (points[i] - points[j]) denominators and inverts them in a sing
 
 **Impact**: **7-15x speedup** depending on size, with larger benefits for smaller interpolations where the overhead of individual inversions was proportionally higher.
 
-### 4. Optimized Field Squaring
+### 5. Optimized Field Squaring
 
 **Implementation**: `Fp128::square()`
 
@@ -162,7 +194,8 @@ Uses 3 multiplications instead of 4 by exploiting the symmetry in a² = a_lo² +
 | Field Mul          | 4.87 ns      | ~3-4 ns (AVX)     | ~1.2x      |
 | Field Invert       | 3.54 µs      | ~2-3 µs           | ~1.3x      |
 | Batch Invert (100) | 5.86 µs      | ~5-6 µs           | Comparable |
-| Polynomial Extend  | O(n²)        | O(n log n) FFT    | Needs FFT  |
+| FFT (1024)         | 123 µs       | ~50-100 µs        | ~1.5x      |
+| Poly Multiply FFT  | O(n log n)   | O(n log n)        | ✓          |
 | Merkle Build       | 8-9 Melem/s  | ~10-15 Melem/s    | ~0.7x      |
 | Proof Gen (simple) | 159 µs       | ~100-150 µs       | ~1.1x      |
 
@@ -170,33 +203,28 @@ Uses 3 multiplications instead of 4 by exploiting the symmetry in a² = a_lo² +
 
 ### High Priority
 
-1. **FFT for polynomial operations**
-   - Would reduce `extend` from O(n²) to O(n log n)
-   - Expected additional speedup: 10-100x for large polynomials
-   - Requires finding primitive roots of unity for our field
-
-2. **Parallelization**
+1. **Parallelization**
    - Ligero commitment is embarrassingly parallel
    - Row computations can be done independently
    - Would benefit from rayon or similar
 
 ### Medium Priority
 
-3. **SIMD for field operations**
+2. **SIMD for field operations**
    - AVX2/AVX-512 can process multiple field elements at once
    - Would improve all inner loops
 
-4. **Memory allocation reduction**
+3. **Memory allocation reduction**
    - Pre-allocate vectors where possible
    - Reuse buffers across operations
 
 ### Low Priority
 
-5. **Montgomery form for field elements**
+4. **Montgomery form for field elements**
    - Would speed up sequences of multiplications
    - Requires conversion cost at boundaries
 
-6. **Precomputation tables**
+5. **Precomputation tables**
    - For frequently used values in polynomial evaluation
 
 ## Running Benchmarks
@@ -248,7 +276,8 @@ with the spec and other implementations.
 | 2026-01-22 | 0.1.1   | Batch inversion              | 111x for 500 elems   |
 | 2026-01-22 | 0.1.1   | Barycentric interpolation    | 16x extend_evals     |
 | 2026-01-22 | 0.1.1   | Optimized Poly::interpolate  | 15x for 8 points     |
+| 2026-01-23 | 0.1.2   | FFT implementation           | O(n log n) poly mul  |
 
 ---
 
-*Last updated: 2026-01-22*
+*Last updated: 2026-01-23*

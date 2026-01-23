@@ -74,6 +74,7 @@
 #![warn(rust_2018_idioms)]
 
 pub mod circuit;
+pub mod fft;
 pub mod field;
 pub mod hash;
 pub mod ligero;
@@ -85,6 +86,7 @@ pub mod zk;
 
 // Re-export commonly used types
 pub use circuit::{Circuit, CircuitBuilder, Layer, LayerBuilder, QuadTerm};
+pub use fft::{fft, ifft, polynomial_multiply, FftDomain};
 pub use field::{batch_invert, Field, Fp128};
 pub use hash::{DefaultHash, HashDigest, HashFunction, Sha256Hash};
 #[cfg(feature = "blake3_hash")]

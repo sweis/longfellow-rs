@@ -5,9 +5,15 @@
 //!
 //! # Performance
 //!
-//! This module includes optimized FFT-based polynomial operations where possible.
-//! The FFT implementation provides O(n log n) complexity for polynomial
-//! multiplication and evaluation, compared to O(n²) for naive algorithms.
+//! This module includes optimized polynomial operations using:
+//! - **FFT** (Fast Fourier Transform) for O(n log n) polynomial multiplication
+//! - **Barycentric interpolation** with precomputed weights for O(n) evaluation per point
+//! - **Batch inversion** (Montgomery's trick) reducing O(n) inversions to O(1)
+//! - **Horner's method** for O(n) single-point polynomial evaluation
+//!
+//! For polynomial extension on consecutive integer points (not roots of unity),
+//! the barycentric interpolation approach is used since FFT evaluation points
+//! don't align with the required output points.
 
 use crate::field::{batch_invert, Field};
 
