@@ -5,7 +5,7 @@
 //! - google/longfellow-zk (C++)
 //! - abetterinternet/zk-cred-longfellow (Rust)
 
-use longfellow_zk::field::Fp128;
+use longfellow_zk::field::{Field, FieldId, Fp128, Fp256, GF2_128};
 use longfellow_zk::hash::{HashFunction, Sha256Hash};
 use longfellow_zk::merkle::{hash_pair, MerkleTreeGeneric};
 use longfellow_zk::polynomial::{extend, Polynomial};
@@ -474,4 +474,190 @@ fn test_zk_proof_roundtrip() {
     // Verify proof
     let verified = verify_zk(&circuit, &[], &proof);
     assert!(verified, "Valid proof should verify");
+}
+
+// ==========================================================================
+// IETF Spec Field Compatibility Tests
+// ==========================================================================
+
+/// Test GF(2^128) irreducible polynomial matches the IETF spec.
+/// Spec: GF(2)[x] / (x^128 + x^7 + x^2 + x + 1)
+#[test]
+fn test_gf2_128_irreducible_polynomial() {
+    // The defining relation: x^128 = x^7 + x^2 + x + 1 = 0x87
+    let x = GF2_128::X;
+    let x128 = x.pow(128);
+    assert_eq!(x128, GF2_128::from_u64(0x87),
+        "x^128 should reduce to x^7 + x^2 + x + 1 per IETF spec");
+
+    // Verify x is a generator of the multiplicative group
+    // (order of group is 2^128 - 1, so x^(2^128 - 1) = 1)
+    // We don't test the full order, but x should not be 0 or 1
+    assert_ne!(x, GF2_128::ZERO);
+    assert_ne!(x, GF2_128::ONE);
+}
+
+/// Test GF(2^128) P2 constant for sumcheck matches spec.
+/// Spec: For GF(2^128), P2 = X (the polynomial variable).
+#[test]
+fn test_gf2_128_p2_constant() {
+    // P2 = X per spec (NOT 2, since 1+1=0 in characteristic 2)
+    assert_eq!(<GF2_128 as Field>::P2, GF2_128::X);
+
+    // Verify P2 is distinct from P0=0 and P1=1
+    assert_ne!(<GF2_128 as Field>::P2, GF2_128::ZERO);
+    assert_ne!(<GF2_128 as Field>::P2, GF2_128::ONE);
+}
+
+/// Test GF(2^128) characteristic-2 properties.
+#[test]
+fn test_gf2_128_characteristic_2() {
+    // a + a = 0 for all a
+    let a = GF2_128::from_raw([0xdeadbeef, 0xcafebabe]);
+    assert_eq!(a + a, GF2_128::ZERO);
+
+    // -a = a
+    assert_eq!(-a, a);
+
+    // Frobenius: (a+b)^2 = a^2 + b^2
+    let b = GF2_128::from_raw([0x12345678, 0x9abcdef0]);
+    assert_eq!((a + b).square(), a.square() + b.square());
+}
+
+/// Test GF(2^128) serialization: 16 bytes, little-endian polynomial.
+/// Spec: "obtain b = fs.bytes(16) and interpret the 128 bits of b as a
+/// little-endian polynomial"
+#[test]
+fn test_gf2_128_serialization_spec() {
+    // X = polynomial variable = bit 1 set = byte[0] = 0x02
+    let x = GF2_128::X;
+    let bytes = x.to_bytes();
+    assert_eq!(bytes.len(), 16);
+    assert_eq!(bytes[0], 0x02);
+    for b in &bytes[1..] {
+        assert_eq!(*b, 0);
+    }
+
+    // x^7 + x^2 + x + 1 = 0x87 = byte[0] = 0x87
+    let poly = GF2_128::from_u64(0x87);
+    let bytes = poly.to_bytes();
+    assert_eq!(bytes[0], 0x87);
+    for b in &bytes[1..] {
+        assert_eq!(*b, 0);
+    }
+}
+
+/// Test Fp256 modulus matches NIST P-256 base field.
+/// Spec: p = 2^256 - 2^224 + 2^192 + 2^96 - 1
+/// = 115792089210356248762697446949407573530086143415290314195533631308867097853951
+/// = 0xffffffff00000001_0000000000000000_00000000ffffffff_ffffffffffffffff
+#[test]
+fn test_fp256_modulus_spec() {
+    // Compute p - 1 and verify (p - 1) + 1 = 0 mod p
+    let p_minus_1 = Fp256::ZERO - Fp256::ONE;
+    assert_eq!(p_minus_1 + Fp256::ONE, Fp256::ZERO);
+
+    // Verify the specific byte pattern of p-1 (little-endian serialization)
+    // p - 1 = 0xffffffff00000001_0000000000000000_00000000ffffffff_fffffffffffffffe
+    let bytes = p_minus_1.to_bytes();
+    // Byte 0 (LSB): 0xfe (since p ends in ...ffff and p-1 ends in ...fffe)
+    assert_eq!(bytes[0], 0xfe, "p-1 LSB should be 0xfe");
+    // Bytes 1..8 (rest of limb[0]): all 0xff
+    assert_eq!(&bytes[1..8], &[0xff; 7], "limb[0] high bytes");
+    // Bytes 8..12 (low half of limb[1] = 0xffffffff): all 0xff
+    assert_eq!(&bytes[8..12], &[0xff; 4], "limb[1] low half");
+    // Bytes 12..16 (high half of limb[1] = 0x00000000): all 0x00
+    assert_eq!(&bytes[12..16], &[0x00; 4], "limb[1] high half");
+    // Bytes 16..24 (limb[2] = 0): all 0x00
+    assert_eq!(&bytes[16..24], &[0x00; 8], "limb[2]");
+    // Bytes 24..28 (low half of limb[3] = 0x00000001): 01 00 00 00
+    assert_eq!(&bytes[24..28], &[0x01, 0x00, 0x00, 0x00], "limb[3] low half");
+    // Bytes 28..32 (high half of limb[3] = 0xffffffff): all 0xff
+    assert_eq!(&bytes[28..32], &[0xff; 4], "limb[3] high half");
+}
+
+/// Test Fp256 serialization: 32 bytes, little-endian.
+/// Spec: "a 256-bit element of the finite field Fp256 is serialized into
+/// 32-bytes starting with the least-significant byte"
+#[test]
+fn test_fp256_serialization_spec() {
+    let val = Fp256::from_u64(0x1234);
+    let bytes = val.to_bytes();
+    assert_eq!(bytes.len(), 32);
+    // Little-endian: low bytes first
+    assert_eq!(bytes[0], 0x34);
+    assert_eq!(bytes[1], 0x12);
+    for b in &bytes[2..] {
+        assert_eq!(*b, 0);
+    }
+
+    // Round-trip
+    let recovered = Fp256::from_bytes(&bytes);
+    assert_eq!(recovered, val);
+}
+
+/// Test FieldID values match the IETF spec assignments.
+/// Spec assigns: p256=0x01, p384=0x02, p521=0x03, GF(2^128)=0x04,
+/// GF(2^16)=0x05, 2^128-2^108+1=0x06, 2^64-59=0x07, 2^64-2^32+1=0x08,
+/// F_{2^64-59}^2=0x09, secp256=0x0a
+#[test]
+fn test_field_id_spec_values() {
+    assert_eq!(FieldId::P256 as u8, 0x01);
+    assert_eq!(FieldId::P384 as u8, 0x02);
+    assert_eq!(FieldId::P521 as u8, 0x03);
+    assert_eq!(FieldId::Gf2_128 as u8, 0x04);
+    assert_eq!(FieldId::Gf2_16 as u8, 0x05);
+    assert_eq!(FieldId::Fp128 as u8, 0x06);
+    assert_eq!(FieldId::Fp64m59 as u8, 0x07);
+    assert_eq!(FieldId::Goldilocks as u8, 0x08);
+    assert_eq!(FieldId::Fp64m59Sq as u8, 0x09);
+    assert_eq!(FieldId::Secp256 as u8, 0x0a);
+
+    // Verify implemented fields have correct IDs
+    assert_eq!(Fp256::FIELD_ID, FieldId::P256);
+    assert_eq!(GF2_128::FIELD_ID, FieldId::Gf2_128);
+    assert_eq!(Fp128::FIELD_ID, FieldId::Fp128);
+}
+
+/// Test GF(2^128) x^(-1) = x^127 + x^6 + x + 1 (from reference implementation).
+#[test]
+fn test_gf2_128_x_inverse_known_value() {
+    // From google/longfellow-zk: x^{-1} = x^127 + x^6 + x + 1
+    // = 0x8000000000000000_0000000000000043 (hi = 2^63, lo = 0x43 = 0b1000011)
+    assert_eq!(GF2_128::X * GF2_128::X_INV, GF2_128::ONE);
+
+    // Also verify via general inversion
+    let x_inv_computed = GF2_128::X.invert().unwrap();
+    assert_eq!(x_inv_computed, GF2_128::X_INV);
+}
+
+/// Test that ZK proofs work end-to-end over all spec-required fields.
+#[test]
+fn test_zk_all_fields() {
+    use longfellow_zk::circuit::{CircuitBuilder, LayerBuilder};
+    use longfellow_zk::zk::{verify_zk, ZkProver};
+    use rand::SeedableRng;
+    use rand_chacha::ChaCha20Rng;
+
+    fn test_field<F: Field>() -> bool {
+        let mut builder = CircuitBuilder::<F>::new(0, 3);
+        let mut layer = LayerBuilder::new(0, 2);
+        layer.add_mul(0, 0, 1, F::ONE);
+        builder.add_layer(layer);
+        let circuit = builder.build();
+
+        let a = F::from_u64(5);
+        let b = F::from_u64(9);
+        let witness = vec![a, b, a * b];
+
+        let prover = ZkProver::new(circuit.clone(), vec![], witness);
+        let mut rng = ChaCha20Rng::seed_from_u64(777);
+        let proof = prover.prove(&mut rng);
+
+        verify_zk(&circuit, &[], &proof)
+    }
+
+    assert!(test_field::<Fp128>(), "Fp128 ZK proof should verify");
+    assert!(test_field::<GF2_128>(), "GF(2^128) ZK proof should verify");
+    assert!(test_field::<Fp256>(), "Fp256 ZK proof should verify");
 }

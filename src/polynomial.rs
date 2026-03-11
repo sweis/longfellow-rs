@@ -285,7 +285,11 @@ pub struct BarycentricWeights<F: Field> {
 impl<F: Field> BarycentricWeights<F> {
     /// Compute barycentric weights for interpolation at points 0, 1, ..., n-1.
     ///
-    /// Uses batch inversion for efficiency: O(n) multiplications + 1 inversion.
+    /// Uses batch inversion for efficiency: O(n^2) multiplications + 1 inversion.
+    ///
+    /// This works for any field by computing the weights directly as
+    /// w_i = 1 / prod_{j != i} (point_i - point_j), without assuming
+    /// integer-like arithmetic (so it works for GF(2^k) fields too).
     pub fn new(n: usize) -> Self {
         if n == 0 {
             return Self {
@@ -294,39 +298,29 @@ impl<F: Field> BarycentricWeights<F> {
             };
         }
 
-        // Compute w_i = 1 / prod_{j != i} (i - j)
-        // For consecutive integers 0..n-1:
-        // w_i = 1 / (prod_{j < i} (i - j) * prod_{j > i} (i - j))
-        //     = 1 / (i! * (-1)^(n-1-i) * (n-1-i)!)
-        //     = (-1)^(n-1-i) / (i! * (n-1-i)!)
+        // Compute w_i = 1 / prod_{j != i} (point_i - point_j)
+        // where point_k = F::from_u64(k).
+        //
+        // For prime fields with consecutive integers this would simplify to
+        // (-1)^(n-1-i) / (i! * (n-1-i)!), but for binary fields (GF(2^k))
+        // subtraction is XOR, so we must compute the actual products.
 
-        let mut factorials = vec![F::ONE; n];
-        for i in 1..n {
-            factorials[i] = factorials[i - 1] * F::from_u64(i as u64);
-        }
+        let points: Vec<F> = (0..n).map(|i| F::from_u64(i as u64)).collect();
 
-        // Compute products for each weight
         let mut products = Vec::with_capacity(n);
         for i in 0..n {
-            // i! * (n-1-i)!
-            let prod = factorials[i] * factorials[n - 1 - i];
+            let mut prod = F::ONE;
+            for j in 0..n {
+                if i != j {
+                    prod = prod * (points[i] - points[j]);
+                }
+            }
             products.push(prod);
         }
 
         // Batch invert all products
-        let inv_products = batch_invert(&products).unwrap();
-
-        // Apply signs: (-1)^(n-1-i)
-        let mut weights = Vec::with_capacity(n);
-        for i in 0..n {
-            let sign_exp = n - 1 - i;
-            let w = if sign_exp % 2 == 0 {
-                inv_products[i]
-            } else {
-                -inv_products[i]
-            };
-            weights.push(w);
-        }
+        let weights = batch_invert(&products)
+            .expect("interpolation points must be distinct");
 
         Self { weights, n }
     }
@@ -348,14 +342,13 @@ impl<F: Field> BarycentricWeights<F> {
             return F::ZERO;
         }
 
-        // Check if x is one of the interpolation points
-        let x_as_u64 = x.to_bytes();
-        let x_lo = u64::from_le_bytes(x_as_u64[0..8].try_into().unwrap());
-        let x_hi = u64::from_le_bytes(x_as_u64[8..16].try_into().unwrap());
-        if x_hi == 0 && (x_lo as usize) < self.n {
-            // Check that x equals x_lo exactly (in case of field wrap)
-            if x == F::from_u64(x_lo) {
-                return values[x_lo as usize];
+        // Check if x is one of the interpolation points.
+        // We compare against F::from_u64(i) for each i, since the byte
+        // representation check doesn't generalize to all field types
+        // (e.g., Fp256 has 32-byte representation).
+        for i in 0..self.n {
+            if x == F::from_u64(i as u64) {
+                return values[i];
             }
         }
 
@@ -752,5 +745,53 @@ mod tests_large {
         }
         println!("Total mismatches: {}/{}", mismatches, ncol);
         assert_eq!(mismatches, 0, "Found {} mismatches", mismatches);
+    }
+
+    #[test]
+    fn test_extend_evaluations_gf2_128() {
+        // Verify that extend_evaluations works correctly over the binary field.
+        // This is critical: the barycentric weights computation must not
+        // assume integer-like arithmetic (e.g., i! factorials).
+        use crate::field::GF2_128;
+        let mut rng = ChaCha20Rng::seed_from_u64(42);
+
+        let block = 10;
+        let ncol = 40;
+
+        // Random polynomial coefficients
+        let coeffs: Vec<GF2_128> = (0..block).map(|_| GF2_128::random(&mut rng)).collect();
+
+        // extend: coefficients -> evaluations at points 0..ncol-1
+        let extended = extend(&coeffs, block, ncol);
+
+        // extend_evaluations: first `block` evaluations -> all ncol evaluations
+        let re_extended = extend_evaluations(&extended, block, ncol);
+
+        // Should match exactly (same polynomial, same evaluation points)
+        for j in 0..ncol {
+            assert_eq!(extended[j], re_extended[j],
+                "GF(2^128) extend mismatch at point {}", j);
+        }
+    }
+
+    #[test]
+    fn test_extend_evaluations_fp256() {
+        // Verify extend_evaluations over the 256-bit P-256 field.
+        // The previous implementation assumed 16-byte serialization
+        // which would break for 32-byte Fp256 elements.
+        use crate::field::Fp256;
+        let mut rng = ChaCha20Rng::seed_from_u64(99);
+
+        let block = 8;
+        let ncol = 32;
+
+        let coeffs: Vec<Fp256> = (0..block).map(|_| Fp256::random(&mut rng)).collect();
+        let extended = extend(&coeffs, block, ncol);
+        let re_extended = extend_evaluations(&extended, block, ncol);
+
+        for j in 0..ncol {
+            assert_eq!(extended[j], re_extended[j],
+                "Fp256 extend mismatch at point {}", j);
+        }
     }
 }

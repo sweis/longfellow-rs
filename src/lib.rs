@@ -47,14 +47,27 @@
 //!
 //! # Modules
 //!
-//! - [`field`]: Finite field arithmetic over Fp128 = 2^128 - 2^108 + 1
+//! - [`field`]: Finite field arithmetic (Fp128, Fp256, GF(2^128))
 //! - [`transcript`]: Fiat-Shamir transcript for non-interactive proofs
 //! - [`merkle`]: Merkle tree implementation for commitments
 //! - [`polynomial`]: Polynomial operations and Reed-Solomon encoding
-//! - [`ligero`]: Ligero commitment scheme
-//! - [`sumcheck`]: Sumcheck protocol for verifiable computation
+//! - [`ligero`]: Ligero commitment scheme (prover + verifier)
+//! - [`sumcheck`]: Sumcheck protocol (prover + verifier)
 //! - [`circuit`]: Layered arithmetic circuit representation
 //! - [`zk`]: Full zero-knowledge prover and verifier
+//!
+//! # Supported Fields
+//!
+//! All fields required by the IETF draft-google-cfrg-libzk are implemented:
+//!
+//! | Field      | FieldID | Type                | Modulus/Polynomial                    |
+//! |------------|---------|---------------------|---------------------------------------|
+//! | [`Fp256`]  | 0x01    | Prime (NIST P-256)  | p = 2^256 - 2^224 + 2^192 + 2^96 - 1  |
+//! | [`GF2_128`]| 0x04    | Binary extension    | Q(x) = x^128 + x^7 + x^2 + x + 1      |
+//! | [`Fp128`]  | 0x06    | Prime               | p = 2^128 - 2^108 + 1                 |
+//!
+//! The entire proof system is generic over any type implementing [`Field`].
+//! See `examples/multi_field.rs` for a demonstration of proofs over each field.
 //!
 //! # Security
 //!
@@ -85,7 +98,7 @@ pub mod zk;
 
 // Re-export commonly used types
 pub use circuit::{Circuit, CircuitBuilder, Layer, LayerBuilder, QuadTerm};
-pub use field::{batch_invert, Field, Fp128};
+pub use field::{batch_invert, Field, FieldId, Fp128, Fp256, GF2_128};
 pub use hash::{DefaultHash, HashDigest, HashFunction, Sha256Hash};
 #[cfg(feature = "blake3_hash")]
 pub use hash::Blake3Hash;
