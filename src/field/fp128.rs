@@ -1,8 +1,9 @@
-//! Finite field arithmetic for the Longfellow ZK scheme.
+//! Prime field Fp128 = 2^128 - 2^108 + 1.
 //!
-//! This module implements arithmetic over the field Fp128 = 2^128 - 2^108 + 1,
-//! which is the primary field used in the Longfellow ZK protocol.
+//! This is FieldID 0x06 in the IETF draft-google-cfrg-libzk specification.
+//! The prime allows efficient reduction using: 2^128 ≡ 2^108 - 1 (mod p).
 
+use super::{Field, FieldId};
 use std::ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
 use zeroize::Zeroize;
@@ -523,120 +524,13 @@ impl std::iter::Product for Fp128 {
     }
 }
 
-/// Batch inversion using Montgomery's trick.
-///
-/// Given a slice of field elements [a_0, a_1, ..., a_{n-1}], computes
-/// [a_0^{-1}, a_1^{-1}, ..., a_{n-1}^{-1}] using only one field inversion
-/// and 3(n-1) multiplications.
-///
-/// Returns None if any element is zero.
-pub fn batch_invert<F: Field>(elements: &[F]) -> Option<Vec<F>> {
-    let n = elements.len();
-    if n == 0 {
-        return Some(vec![]);
-    }
-
-    // Check for zeros
-    for e in elements {
-        if e.is_zero() {
-            return None;
-        }
-    }
-
-    if n == 1 {
-        return Some(vec![elements[0].invert()?]);
-    }
-
-    // Compute prefix products: prefix[i] = a_0 * a_1 * ... * a_i
-    let mut prefix = Vec::with_capacity(n);
-    prefix.push(elements[0]);
-    for i in 1..n {
-        prefix.push(prefix[i - 1] * elements[i]);
-    }
-
-    // Invert the total product
-    let mut inv = prefix[n - 1].invert()?;
-
-    // Compute inverses from right to left
-    let mut result = vec![F::ZERO; n];
-    for i in (1..n).rev() {
-        // result[i] = (a_0 * ... * a_{i-1})^{-1} * (a_{i+1} * ... * a_{n-1})^{-1}
-        //           = prefix[i-1] * suffix_inv
-        result[i] = prefix[i - 1] * inv;
-        // Update suffix inverse: suffix_inv = a_i * suffix_inv_{i+1}
-        inv = inv * elements[i];
-    }
-    result[0] = inv;
-
-    Some(result)
-}
-
-/// Batch inversion in place, modifying the input slice.
-/// Returns false if any element is zero.
-pub fn batch_invert_inplace<F: Field>(elements: &mut [F]) -> bool {
-    if let Some(inverted) = batch_invert(elements) {
-        elements.copy_from_slice(&inverted);
-        true
-    } else {
-        false
-    }
-}
-
-/// Trait for field elements used in the Longfellow ZK scheme.
-pub trait Field:
-    Sized
-    + Clone
-    + Copy
-    + Default
-    + PartialEq
-    + Eq
-    + Add<Output = Self>
-    + AddAssign
-    + Sub<Output = Self>
-    + SubAssign
-    + Mul<Output = Self>
-    + MulAssign
-    + Neg<Output = Self>
-    + std::iter::Sum
-    + std::iter::Product
-    + std::fmt::Debug
-{
-    /// The additive identity.
-    const ZERO: Self;
-
-    /// The multiplicative identity.
-    const ONE: Self;
-
-    /// The evaluation point P2 for polynomial representation.
-    /// For prime fields with characteristic > 2, this is 2.
-    const P2: Self;
-
-    /// Create from a u64 value.
-    fn from_u64(value: u64) -> Self;
-
-    /// Check if zero.
-    fn is_zero(&self) -> bool;
-
-    /// Compute multiplicative inverse.
-    fn invert(&self) -> Option<Self>;
-
-    /// Square the element.
-    fn square(&self) -> Self;
-
-    /// Generate a random element.
-    fn random<R: rand::Rng>(rng: &mut R) -> Self;
-
-    /// Convert to bytes.
-    fn to_bytes(&self) -> Vec<u8>;
-
-    /// Create from bytes.
-    fn from_bytes(bytes: &[u8]) -> Self;
-}
-
 impl Field for Fp128 {
     const ZERO: Self = Self::ZERO;
     const ONE: Self = Self::ONE;
     const P2: Self = Self::TWO;
+    const FIELD_ID: FieldId = FieldId::Fp128;
+    const BYTE_LEN: usize = 16;
+    const CHARACTERISTIC: u64 = 0; // Prime doesn't fit in u64
 
     fn from_u64(value: u64) -> Self {
         Self::from_u64(value)
@@ -736,7 +630,7 @@ mod tests {
             Fp128::from_u64(11),
         ];
 
-        let inverted = super::batch_invert(&elements).unwrap();
+        let inverted = crate::field::batch_invert(&elements).unwrap();
 
         // Verify each inverse
         for (a, a_inv) in elements.iter().zip(inverted.iter()) {
@@ -747,21 +641,21 @@ mod tests {
     #[test]
     fn test_batch_invert_single() {
         let elements = vec![Fp128::from_u64(7)];
-        let inverted = super::batch_invert(&elements).unwrap();
+        let inverted = crate::field::batch_invert(&elements).unwrap();
         assert_eq!(elements[0] * inverted[0], Fp128::ONE);
     }
 
     #[test]
     fn test_batch_invert_empty() {
         let elements: Vec<Fp128> = vec![];
-        let inverted = super::batch_invert(&elements).unwrap();
+        let inverted = crate::field::batch_invert(&elements).unwrap();
         assert!(inverted.is_empty());
     }
 
     #[test]
     fn test_batch_invert_zero() {
         let elements = vec![Fp128::from_u64(2), Fp128::ZERO, Fp128::from_u64(3)];
-        assert!(super::batch_invert(&elements).is_none());
+        assert!(crate::field::batch_invert(&elements).is_none());
     }
 
     #[test]
